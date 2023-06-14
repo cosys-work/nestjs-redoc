@@ -8,6 +8,8 @@ import pathModule from 'path';
 import { resolve } from 'url';
 import { LogoOptions, RedocDocument, RedocOptions } from './interfaces';
 import { schema } from './model/options.model';
+import { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { FastifyReply, FastifyRequest } from 'fastify';
 
 export class RedocModule {
   /**
@@ -32,7 +34,12 @@ export class RedocModule {
       );
       const httpAdapter: HttpServer = app.getHttpAdapter();
       if (httpAdapter?.constructor?.name === 'FastifyAdapter') {
-        return this.setupFastify();
+        return this.setupFastify(
+          path,
+          <NestFastifyApplication>app,
+          redocDocument,
+          options
+        );
       }
       return await this.setupExpress(
         path,
@@ -41,15 +48,86 @@ export class RedocModule {
         _options
       );
     } catch (error) {
+      console.log('Error in RedocModule.setup');
       throw error;
     }
   }
 
   /**
    * Setup fastify (not implemented yet)
+   * @param path - path to mount the ReDoc frontend
+   * @param app - NestApplication
+   * @param document - ReDoc document object
+   * @param options - Init options
    */
-  private static async setupFastify(): Promise<void> {
-    throw new Error('Fastify is not implemented yet');
+  private static async setupFastify(
+    path: string,
+    app: NestFastifyApplication,
+    document: RedocDocument,
+    options: RedocOptions
+  ): Promise<void> {
+    const httpAdapter = app.getHttpAdapter();
+    // Normalize URL path to use
+    const finalPath = this.normalizePath(path);
+    // Add a slash to the end of the URL path to use in URL resolve function
+    const resolvedPath = !finalPath.endsWith('/') ? finalPath + '/' : finalPath;
+    // Serve swagger spec in another URL appended to the normalized path
+    const docUrl = resolve(resolvedPath, `${options.docName}.json`);
+    // create helper to convert metadata to JSON
+    const hbs = handlebars.create({
+      helpers: {
+        toJSON: function (object: any) {
+          return JSON.stringify(object);
+        },
+      },
+    });
+    // spread redoc options
+    const { title, favicon, theme, redocVersion, ...otherOptions } = options;
+    // create render object
+    const renderData = {
+      data: {
+        title,
+        docUrl,
+        favicon,
+        redocVersion,
+        options: otherOptions,
+        ...(theme && {
+          theme: {
+            ...theme,
+          },
+        }),
+      },
+    };
+    // this is our handlebars file path
+    const redocFilePath = pathModule.join(
+      __dirname,
+      '..',
+      'views',
+      'redoc.handlebars'
+    );
+    // get handlebars rendered HTML
+    const redocHTML = await hbs.render(redocFilePath, renderData);
+    // Serve ReDoc Frontend
+    httpAdapter.get(
+      finalPath,
+      async (req: FastifyRequest, res: FastifyReply) => {
+        const sendPage = async () => {
+          // Content-Security-Policy: worker-src 'self' blob:
+          await res.header(
+            'Content-Security-Policy',
+            "default-src * 'unsafe-inline' 'unsafe-eval'; script-src * 'unsafe-inline' 'unsafe-eval'; child-src * 'unsafe-inline' 'unsafe-eval' blob:; worker-src * 'unsafe-inline' 'unsafe-eval' blob:; connect-src * 'unsafe-inline'; img-src * data: blob: 'unsafe-inline'; frame-src *; style-src * 'unsafe-inline';"
+          );
+          // whoosh
+          await res.send(redocHTML);
+        };
+        await sendPage();
+      }
+    );
+    // Serve swagger spec json
+    httpAdapter.get(docUrl, async (req: FastifyRequest, res: FastifyReply) => {
+      await res.header('Content-Type', 'application/json');
+      await res.send(document);
+    });
   }
 
   private static async validateOptionsObject(
