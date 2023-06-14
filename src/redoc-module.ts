@@ -31,11 +31,7 @@ export class RedocModule {
         <RedocDocument>document
       );
       const httpAdapter: HttpServer = app.getHttpAdapter();
-      if (
-        httpAdapter &&
-        httpAdapter.constructor &&
-        httpAdapter.constructor.name === 'FastifyAdapter'
-      ) {
+      if (httpAdapter?.constructor?.name === 'FastifyAdapter') {
         return this.setupFastify();
       }
       return await this.setupExpress(
